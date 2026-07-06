@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "src/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "src/**"
+
+env:
+  BUILD_CONFIGURATION: Release
+  DOTNET_SDK_VERSION: 8.0.x
+  NODE_VERSION: 22.x
+  PNPM_VERSION: 10.18.3
+  API_ARTIFACT_NAME: billsoft-api
+  WEB_ARTIFACT_NAME: billsoft-web
+
+jobs:
+  backend:
+    name: Backend build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use .NET SDK ${{ env.DOTNET_SDK_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('BillSoft.sln', 'src/api/BillSoft.Api/BillSoft.Api.csproj', 'src/api/BillSoft.Application/BillSoft.Application.csproj', 'src/api/BillSoft.Domain/BillSoft.Domain.csproj', 'src/api/BillSoft.Infrastructure/BillSoft.Infrastructure.csproj', 'tests/BillSoft.Tests/BillSoft.Tests.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore backend dependencies
+        run: dotnet restore BillSoft.sln --packages ~/.nuget/packages
+
+      - name: Build backend
+        run: dotnet build BillSoft.sln -c ${{ env.BUILD_CONFIGURATION }} --no-restore
+
+      - name: Test backend
+        run: dotnet test BillSoft.sln -c ${{ env.BUILD_CONFIGURATION }} --no-build --no-restore --logger trx --results-directory ${{ runner.temp }}/TestResults/backend
+
+      - name: Publish backend test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Backend .NET Tests
+          path: ${{ runner.temp }}/TestResults/backend/**/*.trx
+          reporter: dotnet-trx
+          fail-on-error: true
+          fail-on-empty: true
+
+      - name: Publish API artifact
+        run: dotnet publish src/api/BillSoft.Api/BillSoft.Api.csproj -c ${{ env.BUILD_CONFIGURATION }} --no-restore -o ${{ runner.temp }}/publish/${{ env.API_ARTIFACT_NAME }}
+
+      - name: Upload billsoft-api artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.API_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/publish/${{ env.API_ARTIFACT_NAME }}
+
+  frontend:
+    name: Frontend test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Activate pnpm ${{ env.PNPM_VERSION }}
+        run: corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('src/web/package.json', 'src/web/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: src/web
+        run: pnpm install --frozen-lockfile --store-dir ~/.pnpm-store
+
+      - name: Run frontend tests
+        working-directory: src/web
+        run: pnpm run test:ci
+
+      - name: Publish frontend test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Frontend Vitest Tests
+          path: src/web/test-results/vitest-junit.xml
+          reporter: java-junit
+          fail-on-error: true
+          fail-on-empty: true
+
+      - name: Typecheck frontend
+        working-directory: src/web
+        run: pnpm run typecheck
+
+      - name: Build frontend
+        working-directory: src/web
+        run: pnpm run build
+
+      - name: Upload billsoft-web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.WEB_ARTIFACT_NAME }}
+          path: src/web/dist

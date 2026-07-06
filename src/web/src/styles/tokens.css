@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light;
+
+  /* ── Brand palette ── */
+  --bs-primary: #e07b00;
+  --bs-primary-hover: #c96e00;
+  --bs-accent: #0d7a70;
+  --bs-accent-hover: #0a6560;
+  --bs-success: #16803d;
+  --bs-warning: #b45309;
+  --bs-danger: #c0202a;
+  --bs-info: #1d55d4;
+
+  /* ── Surfaces ── */
+  --bs-background: #f5efe6;
+  --bs-surface: #fdfaf5;
+  --bs-surface-alt: #f2e9dd;
+  --bs-surface-raised: #ffffff;
+  --bs-border: #e0cebc;
+  --bs-border-strong: #c8b49c;
+
+  /* ── Dark chrome surface (topbar, nav card on dark mode) ── */
+  --bs-chrome: #0e0d0b;
+  --bs-chrome-border: rgba(255, 255, 255, 0.09);
+  --bs-chrome-text: #f2ece4;
+  --bs-chrome-muted: rgba(242, 236, 228, 0.55);
+
+  /* ── Text ── */
+  --bs-text: #1a1610;
+  --bs-text-muted: #64584a;
+  --bs-text-placeholder: #a89c8e;
+
+  /* ── Soft tints ── */
+  --bs-primary-soft: #fff1d6;
+  --bs-accent-soft: #d8f3ef;
+  --bs-success-soft: #d8f5e4;
+  --bs-warning-soft: #fde8c2;
+  --bs-danger-soft: #fde0e0;
+  --bs-info-soft: #dce9ff;
+
+  /* ── Geometry ── */
+  --bs-radius-xs: 6px;
+  --bs-radius-sm: 10px;
+  --bs-radius-md: 14px;
+  --bs-radius-lg: 20px;
+  --bs-radius-xl: 24px;
+  --bs-radius-pill: 999px;
+
+  /* ── Shadows ── */
+  --bs-shadow-xs: 0 1px 3px rgba(30, 20, 8, 0.06), 0 1px 2px rgba(30, 20, 8, 0.04);
+  --bs-shadow-sm: 0 4px 12px rgba(30, 20, 8, 0.08), 0 1px 4px rgba(30, 20, 8, 0.05);
+  --bs-shadow-md: 0 12px 32px rgba(30, 20, 8, 0.12), 0 4px 12px rgba(30, 20, 8, 0.07);
+  --bs-shadow-lg: 0 24px 64px rgba(30, 20, 8, 0.16), 0 8px 24px rgba(30, 20, 8, 0.09);
+  --bs-shadow-chrome: 0 8px 32px rgba(0, 0, 0, 0.36);
+
+  /* ── Touch targets ── */
+  --bs-touch-min: 44px;
+  --bs-touch-comfortable: 48px;
+  --bs-touch-roomy: 56px;
+
+  /* ── Module max-widths ── */
+  --bs-shell-width: 1440px;
+  --bs-order-width: 100%;
+  --bs-inventory-width: 1260px;
+  --bs-admin-width: 1180px;
+  --bs-dense-width: 980px;
+
+  /* ── Typography ── */
+  --bs-font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --bs-font-display: Georgia, 'Times New Roman', serif;
+  --bs-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  /* ── Transitions ── */
+  --bs-transition-fast: 100ms ease;
+  --bs-transition-base: 160ms ease;
+  --bs-transition-slow: 260ms ease;
+}

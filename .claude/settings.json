@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(git *)",
+
+      "Bash(pnpm *)",
+      "Bash(npx vitest *)",
+      "Bash(npx playwright *)",
+      "Bash(node -e '*)",
+      "Bash(node --version)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3010/)",
+      "Bash(curl -s http://localhost:*)",
+      "Bash(xargs grep -l \"kitchen/tickets\")",
+      "Bash(cd * && grep *)",
+      "Bash(cd * && gh *)",
+      "Bash(find *)",
+      "Bash(cd * && find *)",
+      "Bash(grep *)",
+      "Bash(which *)",
+      "Bash(where *)",
+      "Bash(gh *)",
+      "Bash(sed *)",
+      "Bash(python3 -c *)",
+      "Bash(tail -c * | sed *)",
+      "Bash(until * do sleep *; done; tail *)",
+
+      "PowerShell(pnpm *)",
+      "PowerShell(dotnet build *)",
+      "PowerShell(dotnet test *)",
+      "PowerShell(dotnet run *)",
+      "PowerShell(dotnet restore *)",
+      "PowerShell(dotnet watch *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell($* = *)",
+      "PowerShell(gh *)",
+      "PowerShell(Select-String *)",
+      "PowerShell(cd * && pnpm *)",
+      "PowerShell(tail -20)"
+    ]
+  },
+  "cleanupPeriodDays": 30,
+  "includeGitInstructions": true
+}

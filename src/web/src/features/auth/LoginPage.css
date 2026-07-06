@@ -1,0 +1,450 @@
+/* ══════════════════════════════════════════════════════════
+   Login page — full-bleed split layout
+══════════════════════════════════════════════════════════ */
+:root {
+  font-family: var(--bs-font-sans, 'Inter', 'Segoe UI', system-ui, sans-serif);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  color: #1a1610;
+  background: #ede6db;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes auth-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes hero-reveal {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Shell ── */
+.billsoft-page {
+  min-height: 100vh;
+}
+
+.billsoft-shell {
+  width: 100%;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(440px, 0.85fr);
+  background: #f0e9df;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Hero panel (left)
+══════════════════════════════════════════════════════════ */
+.hero-panel {
+  position: relative;
+  overflow: hidden;
+  background: #090806;
+  animation: hero-reveal 0.6s ease both;
+}
+
+.hero-top {
+  position: absolute;
+  top: 28px;
+  left: 28px;
+  z-index: 4;
+}
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #f5ede4;
+}
+
+.brand-badge {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.9rem;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #e07b00, #a85800);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: white;
+  box-shadow: 0 4px 14px rgba(224, 123, 0, 0.45);
+}
+
+.brand-name {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Hero image + overlays */
+.hero-scene {
+  position: absolute;
+  inset: 0;
+}
+
+.hero-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 35%;
+  filter: brightness(0.75) contrast(1.1) saturate(0.88);
+}
+
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 45% 55%, transparent 24%, rgba(0,0,0,0.52) 68%, rgba(0,0,0,0.88) 100%),
+    linear-gradient(180deg, rgba(0,0,0,0.22) 0%, transparent 18%, transparent 55%, rgba(0,0,0,0.78) 100%);
+}
+
+/* Subtle noise texture for depth */
+.hero-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+
+.hero-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hero-glow-a {
+  background: radial-gradient(circle at 16% 12%, rgba(224, 123, 0, 0.15), transparent 20%);
+}
+
+.hero-glow-b {
+  background: radial-gradient(circle at 68% 46%, rgba(255, 210, 140, 0.07), transparent 24%);
+}
+
+.hero-edge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(7vw, 80px);
+  height: 100%;
+  background: linear-gradient(to right, transparent, rgba(8, 7, 5, 0.92));
+}
+
+/* Hero copy */
+.hero-copy {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 36px;
+  z-index: 4;
+  max-width: 680px;
+  color: #f0e8df;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.38);
+  animation: auth-fade-up 0.7s 0.15s ease both;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: rgba(224, 123, 0, 0.9);
+}
+
+.hero-copy h1 {
+  margin: 10px 0 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(2.2rem, 3.8vw, 4.1rem);
+  line-height: 0.97;
+  letter-spacing: -0.05em;
+  font-weight: 400;
+  max-width: 12ch;
+}
+
+.hero-copy p {
+  margin: 14px 0 0;
+  max-width: 52ch;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: rgba(240, 232, 223, 0.78);
+}
+
+/* ══════════════════════════════════════════════════════════
+   Auth panel (right)
+══════════════════════════════════════════════════════════ */
+.auth-panel {
+  background: #f5efe8;
+  padding: clamp(2rem, 4vw, 4rem) clamp(2rem, 5vw, 4.5rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  border-left: 1px solid rgba(30, 20, 8, 0.07);
+}
+
+.auth-copy {
+  max-width: 420px;
+  animation: auth-fade-up 0.55s 0.1s ease both;
+}
+
+.eyebrow-dark {
+  color: rgba(23, 18, 10, 0.5);
+}
+
+.auth-copy h2 {
+  margin: 10px 0 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(1.9rem, 2.3vw, 2.9rem);
+  line-height: 1.03;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  color: #140f08;
+}
+
+.auth-copy__subtitle {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+  color: rgba(23, 18, 10, 0.58);
+  line-height: 1.6;
+}
+
+/* Form */
+.auth-form {
+  margin-top: 2rem;
+  max-width: 420px;
+  display: grid;
+  gap: 1rem;
+  animation: auth-fade-up 0.6s 0.2s ease both;
+}
+
+.auth-form__note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(23, 18, 10, 0.52);
+  line-height: 1.5;
+}
+
+.auth-form__note--branch {
+  margin-top: -0.25rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.field-head label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: rgba(23, 18, 10, 0.65);
+}
+
+/* Password field wrapper */
+.password-shell {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.password-input {
+  flex: 1;
+  padding-right: 3rem !important;
+}
+
+.password-toggle {
+  position: absolute !important;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  min-height: unset !important;
+  width: 3rem;
+  border-radius: 0 var(--bs-radius-md, 14px) var(--bs-radius-md, 14px) 0 !important;
+  color: rgba(23, 18, 10, 0.5) !important;
+}
+
+.password-toggle svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Error */
+.auth-form__error {
+  padding: 0.875rem 1rem;
+  background: #fef2f2;
+  border: 1px solid rgba(192, 32, 42, 0.25);
+  border-radius: 12px;
+  color: #9b1c1c;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Submit button override — gradient pill */
+.auth-submit {
+  margin-top: 0.25rem;
+  min-height: 52px !important;
+  font-size: 1rem !important;
+  font-weight: 700 !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #e07b00, #9a5500) !important;
+  color: white !important;
+  box-shadow:
+    0 4px 18px rgba(224, 123, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  transition: transform 120ms ease, box-shadow 120ms ease !important;
+}
+
+.auth-submit:hover {
+  transform: translateY(-2px) !important;
+  box-shadow:
+    0 8px 28px rgba(224, 123, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+.auth-submit:active {
+  transform: translateY(0) scale(0.99) !important;
+}
+
+.auth-inline-action {
+  font-size: 0.82rem !important;
+  color: rgba(23, 18, 10, 0.6) !important;
+  min-height: unset !important;
+  padding: 0.25rem 0.5rem !important;
+}
+
+.auth-inline-action--owner {
+  color: rgba(23, 18, 10, 0.5) !important;
+}
+
+/* Bottom row */
+.access-row {
+  margin-top: 1.5rem;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.875rem;
+  color: rgba(23, 18, 10, 0.65);
+  animation: auth-fade-up 0.65s 0.3s ease both;
+}
+
+.access-copy {
+  margin: 0;
+}
+
+.terms {
+  margin: 1.25rem 0 0;
+  max-width: 420px;
+  color: rgba(23, 18, 10, 0.5);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  animation: auth-fade-up 0.7s 0.35s ease both;
+}
+
+.login-legal-notice {
+  margin: 0.75rem 0 0;
+  max-width: 420px;
+  color: rgba(23, 18, 10, 0.38);
+  font-size: 0.74rem;
+  line-height: 1.55;
+  animation: auth-fade-up 0.75s 0.4s ease both;
+}
+
+.inline-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: rgba(23, 18, 10, 0.7);
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #161412;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Breakpoints
+══════════════════════════════════════════════════════════ */
+@media (max-width: 1100px) {
+  .billsoft-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-panel {
+    min-height: 520px;
+  }
+
+  .auth-panel {
+    padding-top: 2.5rem;
+    padding-bottom: 3rem;
+  }
+
+  .auth-copy,
+  .auth-form,
+  .terms,
+  .access-row {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 680px) {
+  .hero-panel {
+    min-height: 420px;
+  }
+
+  .hero-top,
+  .hero-copy {
+    left: 20px;
+    right: 20px;
+  }
+
+  .hero-top {
+    top: 20px;
+  }
+
+  .hero-copy {
+    bottom: 24px;
+  }
+
+  .auth-panel {
+    padding: 2rem 20px 2.5rem;
+  }
+
+  .access-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .field-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+}

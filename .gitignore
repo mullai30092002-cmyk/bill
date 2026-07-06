@@ -1,0 +1,77 @@
+## .gitignore for BillSoft
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+dist/
+build/
+.next/
+out/
+coverage/
+artifacts/
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+*.nupkg
+*.snupkg
+ScaffoldingReadMe.txt
+*.binlog
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.VisualState.xml
+TestResult.xml
+nunit-*.xml
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+*.local
+appsettings.Development.local.json
+appsettings.*.local.json
+
+# Local database / backups
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+
+# Temporary files
+~$*
+*~
+*.tmp
+*.temp
+*.tsbuildinfo
+.playwright-mcp/
+.playwright-cli/
+output/
+web-dev.*.log
+.VSCodeCounter/

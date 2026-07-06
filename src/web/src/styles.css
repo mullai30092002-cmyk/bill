@@ -1,0 +1,8 @@
+@import './styles/tokens.css';
+@import './styles/layout.css';
+@import './styles/components.css';
+
+::selection {
+  background: color-mix(in srgb, var(--shell-accent, var(--bs-primary)) 25%, white);
+  color: var(--bs-text);
+}

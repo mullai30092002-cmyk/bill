@@ -1,0 +1,519 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: azureServiceConnection
+    displayName: Azure service connection
+    type: string
+    default: Intelsoft Development Subscription
+  - name: environmentName
+    displayName: Environment name
+    type: string
+    default: dev
+    values:
+      - dev
+      - stage
+      - prod
+  - name: seedDemoData
+    displayName: Seed foundation and demo data
+    type: boolean
+    default: true
+resources:
+  pipelines:
+    - pipeline: ci
+      source: Billsoft.CI
+      trigger:
+        branches:
+          include:
+            - master
+
+variables:
+  - name: frontendCustomDomain
+    value: ''
+  - name: backendCustomDomain
+    value: ''
+  - ${{ if eq(parameters.environmentName, 'dev') }}:
+      - name: frontendCustomDomain
+        value: 'app-billsoft-dev.intelsoft.sg'
+  - ${{ if eq(parameters.environmentName, 'stage') }}:
+      - name: frontendCustomDomain
+        value: 'app-billsoft-stage.intelsoft.sg'
+
+stages:
+  - stage: Deploy
+    displayName: Deploy BillSoft application
+    jobs:
+      - deployment: DeployApplication
+        displayName: Deploy API and frontend
+        environment: ${{ parameters.environmentName }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: Resolve environment resource names
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      $environmentName = '${{ parameters.environmentName }}'
+                      $resourceGroupName = switch ($environmentName) {
+                        'dev' { 'rg-billsoft-dev' }
+                        'stage' { 'rg-billsoft-stage' }
+                        'prod' { 'rg-billsoft-prod' }
+                        default { throw "Unsupported environment '$environmentName'." }
+                      }
+
+                      if (-not (az group exists --name $resourceGroupName | ConvertFrom-Json)) {
+                        throw "Resource group '$resourceGroupName' does not exist for environment '$environmentName'."
+                      }
+
+                      function Get-TaggedResourceName {
+                        param(
+                          [Parameter(Mandatory = $true)]
+                          [string]$ResourceType,
+                          [Parameter(Mandatory = $true)]
+                          [string]$DisplayName
+                        )
+
+                        $names = @(az resource list `
+                          --resource-group $resourceGroupName `
+                          --resource-type $ResourceType `
+                          --query "[?tags.application=='BillSoft' && tags.environment=='$environmentName'].name" `
+                          --output tsv)
+
+                        if ($names.Count -eq 0) {
+                          $fallbackNames = @(az resource list `
+                            --resource-group $resourceGroupName `
+                            --resource-type $ResourceType `
+                            --query "[].name" `
+                            --output tsv)
+
+                          if ($fallbackNames.Count -eq 1) {
+                            Write-Host ("Resolved {0} from the only resource of type {1} in '{2}'." -f $DisplayName, $ResourceType, $resourceGroupName)
+                            return $fallbackNames[0]
+                          }
+
+                          if ($fallbackNames.Count -gt 1) {
+                            throw "Multiple $DisplayName resources were found in resource group '$resourceGroupName' for environment '$environmentName' and no tagged match was available."
+                          }
+
+                          throw "No $DisplayName was found in resource group '$resourceGroupName' for environment '$environmentName'."
+                        }
+
+                        if ($names.Count -gt 1) {
+                          throw "Multiple $DisplayName resources were found in resource group '$resourceGroupName' for environment '$environmentName'."
+                        }
+
+                        return $names[0]
+                      }
+
+                      $apiAppName = Get-TaggedResourceName -ResourceType 'Microsoft.Web/sites' -DisplayName 'API App Service'
+                      $staticWebAppName = Get-TaggedResourceName -ResourceType 'Microsoft.Web/staticSites' -DisplayName 'Static Web App'
+                      $keyVaultName = Get-TaggedResourceName -ResourceType 'Microsoft.KeyVault/vaults' -DisplayName 'Key Vault'
+
+                      Write-Host "##vso[task.setvariable variable=resourceGroupName]$resourceGroupName"
+                      Write-Host "##vso[task.setvariable variable=apiAppName]$apiAppName"
+                      Write-Host "##vso[task.setvariable variable=staticWebAppName]$staticWebAppName"
+                      Write-Host "##vso[task.setvariable variable=keyVaultName]$keyVaultName"
+
+                - task: AzureCLI@2
+                  displayName: Load deployment secrets from Key Vault
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+                      $keyVaultName = "$(keyVaultName)".Trim()
+
+                      if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
+                        throw 'Key Vault name was not resolved from the environment resource group.'
+                      }
+
+                      function Set-SecretVariable {
+                        param(
+                          [string]$Name,
+                          [string]$Value
+                        )
+
+                        if ([string]::IsNullOrWhiteSpace($Value)) {
+                          throw "Required Key Vault secret '$Name' is missing."
+                        }
+
+                        Write-Host "##vso[task.setvariable variable=$Name;issecret=true]$Value"
+                      }
+
+                      Set-SecretVariable -Name 'Database__ConnectionString' -Value (
+                        az keyvault secret show `
+                          --vault-name $keyVaultName `
+                          --name 'Database--ConnectionString' `
+                          --query value `
+                          -o tsv
+                      )
+
+                      Set-SecretVariable -Name 'jwtSigningKey' -Value (
+                        az keyvault secret show `
+                          --vault-name $keyVaultName `
+                          --name 'Jwt--SigningKey' `
+                          --query value `
+                          -o tsv
+                      )
+
+                      Set-SecretVariable -Name 'staticWebAppDeploymentToken' -Value (
+                        az keyvault secret show `
+                          --vault-name $keyVaultName `
+                          --name 'StaticWebApp--DeploymentToken' `
+                          --query value `
+                          -o tsv
+                      )
+
+                - task: AzureCLI@2
+                  displayName: Configure API runtime settings from Key Vault secrets
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      az webapp config appsettings set `
+                        --name "$(apiAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --settings `
+                          "Database__ConnectionString=$(Database__ConnectionString)" `
+                          "Jwt__SigningKey=$(jwtSigningKey)" `
+                        --output none
+
+                - download: ci
+                  artifact: billsoft-api
+                  displayName: Download API artifact
+
+                - task: AzureWebApp@1
+                  displayName: Deploy API to App Service
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    appType: webApp
+                    appName: $(apiAppName)
+                    package: $(Pipeline.Workspace)/ci/billsoft-api
+
+                - task: UseDotNet@2
+                  displayName: Install .NET 8 SDK for database migrations
+                  inputs:
+                    packageType: sdk
+                    version: 8.0.x
+
+                - task: PowerShell@2
+                  displayName: Run EF Core database migrations
+                  inputs:
+                    targetType: inline
+                    pwsh: true
+                    script: |
+                      Set-StrictMode -Version Latest
+                      $ErrorActionPreference = 'Stop'
+
+                      dotnet tool install --global dotnet-ef --version 8.*
+                      $toolsPath = Join-Path $HOME '.dotnet/tools'
+                      if (Test-Path $toolsPath) {
+                        $pathSeparator = [System.IO.Path]::PathSeparator
+                        $env:PATH = "$toolsPath$pathSeparator$env:PATH"
+                      }
+
+                      dotnet ef database update `
+                        --project src/api/BillSoft.Infrastructure/BillSoft.Infrastructure.csproj `
+                        --startup-project src/api/BillSoft.Api/BillSoft.Api.csproj `
+                        --configuration Release
+                  env:
+                    Database__ConnectionString: $(Database__ConnectionString)
+
+                - ${{ if eq(parameters.seedDemoData, true) }}:
+                    - task: PowerShell@2
+                      displayName: Seed foundation and demo data
+                      env:
+                        DATABASE_CONNECTION_STRING: $(Database__ConnectionString)
+                        JWT_SIGNING_KEY: $(jwtSigningKey)
+                      inputs:
+                        targetType: inline
+                        pwsh: true
+                        workingDirectory: $(Pipeline.Workspace)/ci/billsoft-api
+                        script: |
+                          Set-StrictMode -Version Latest
+                          $ErrorActionPreference = 'Stop'
+
+                          $apiDll = Join-Path (Get-Location) 'BillSoft.Api.dll'
+                          if (-not (Test-Path $apiDll)) {
+                            throw "BillSoft.Api.dll was not found in the published API artifact at '$(Get-Location)'."
+                          }
+
+                          $env:Database__ConnectionString = $env:DATABASE_CONNECTION_STRING
+                          $env:Jwt__SigningKey = $env:JWT_SIGNING_KEY
+
+                          if ([string]::IsNullOrWhiteSpace($env:Database__ConnectionString)) {
+                            throw 'Database__ConnectionString is required for seeding.'
+                          }
+
+                          if ([string]::IsNullOrWhiteSpace($env:Jwt__SigningKey)) {
+                            throw 'Jwt__SigningKey is required for seeding.'
+                          }
+
+                          dotnet $apiDll --seed-demo-login
+
+                - download: ci
+                  artifact: billsoft-web
+                  displayName: Download web artifact
+
+                - task: PowerShell@2
+                  displayName: Write frontend runtime config
+                  inputs:
+                    targetType: inline
+                    pwsh: true
+                    workingDirectory: $(Pipeline.Workspace)/ci/billsoft-web
+                    script: |
+                      Set-StrictMode -Version Latest
+                      $ErrorActionPreference = 'Stop'
+
+                      $apiBaseUrl = "https://$(apiAppName).azurewebsites.net"
+                      if ([string]::IsNullOrWhiteSpace($apiBaseUrl)) {
+                        throw 'Unable to resolve the API base URL for the frontend runtime config.'
+                      }
+
+                      $runtimeConfigJson = @{ apiBaseUrl = $apiBaseUrl } | ConvertTo-Json -Compress
+                      $runtimeConfig = "window.__BILLSOFT_RUNTIME_CONFIG__ = $runtimeConfigJson;"
+                      Set-Content -Path (Join-Path (Get-Location) 'runtime-config.js') -Value $runtimeConfig -NoNewline -Encoding utf8
+
+                - task: AzureStaticWebApp@0
+                  displayName: Deploy frontend to Static Web Apps
+                  inputs:
+                    workingDirectory: $(Pipeline.Workspace)/ci
+                    app_location: billsoft-web
+                    output_location: ''
+                    skip_app_build: true
+                    skip_api_build: true
+                    azure_static_web_apps_api_token: $(staticWebAppDeploymentToken)
+
+                - task: AzureCLI@2
+                  displayName: Configure Frontend Static Web App custom domain
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      $customDomain = "$(frontendCustomDomain)".Trim()
+                      if ([string]::IsNullOrWhiteSpace($customDomain)) {
+                        Write-Host 'No frontend custom domain configured for this environment. Skipping.'
+                        exit 0
+                      }
+
+                      $defaultHostname = az staticwebapp show `
+                        --name "$(staticWebAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --query defaultHostname `
+                        --output tsv `
+                        --only-show-errors
+
+                      $existingHostnames = @(az staticwebapp hostname list `
+                        --name "$(staticWebAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --query "[].name" `
+                        --output tsv `
+                        --only-show-errors)
+
+                      if ($existingHostnames -contains $customDomain) {
+                        Write-Host ("Frontend custom domain '{0}' is already configured." -f $customDomain)
+                        exit 0
+                      }
+
+                      try {
+                        az staticwebapp hostname set `
+                          --name "$(staticWebAppName)" `
+                          --resource-group "$(resourceGroupName)" `
+                          --hostname $customDomain `
+                          --validation-method cname-delegation `
+                          --no-wait `
+                          --only-show-errors `
+                          --output none
+
+                        Write-Host ("Requested Static Web App custom domain binding for '{0}'." -f $customDomain)
+                        Write-Host ("Ensure CNAME {0} -> {1} exists if the domain is still pending validation." -f $customDomain, $defaultHostname)
+                      }
+                      catch {
+                        Write-Warning ("Unable to configure frontend custom domain '{0}' yet. Ensure CNAME {0} -> {1} exists and rerun this pipeline after DNS propagation. Details: {2}" -f $customDomain, $defaultHostname, $_.Exception.Message)
+                      }
+
+                - task: AzureCLI@2
+                  displayName: Configure API CORS origin
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      $staticWebAppHost = az staticwebapp show `
+                        --name "$(staticWebAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --query defaultHostname `
+                        -o tsv
+
+                      if ([string]::IsNullOrWhiteSpace($staticWebAppHost)) {
+                        throw "Unable to resolve the Static Web App hostname."
+                      }
+
+                      $corsOrigins = @(
+                        'http://localhost:4173'
+                        'http://localhost:5173'
+                        'http://localhost:5174'
+                      )
+
+                      $configuredFrontendCustomDomain = "$(frontendCustomDomain)".Trim()
+                      if (-not [string]::IsNullOrWhiteSpace($configuredFrontendCustomDomain)) {
+                        $frontendCorsHostnames = [System.Collections.Generic.List[string]]::new()
+                        $frontendCorsHostnames.Add($configuredFrontendCustomDomain)
+
+                        if ($configuredFrontendCustomDomain.StartsWith('www.', [System.StringComparison]::OrdinalIgnoreCase)) {
+                          $frontendCorsHostnames.Add($configuredFrontendCustomDomain.Substring(4))
+                        }
+                        else {
+                          $frontendCorsHostnames.Add("www.$configuredFrontendCustomDomain")
+                        }
+
+                        $frontendCorsHostnames = $frontendCorsHostnames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+                        $corsOrigins = @($frontendCorsHostnames | ForEach-Object { "https://$_" }) + $corsOrigins
+
+                        Write-Host ("Configured frontend custom domains for CORS: {0}" -f (($frontendCorsHostnames | ForEach-Object { "https://$_" }) -join ', '))
+                      }
+
+                      if (-not [string]::IsNullOrWhiteSpace($staticWebAppHost)) {
+                        $corsOrigins = @("https://$staticWebAppHost") + $corsOrigins
+                        Write-Host ("Resolved frontend origin for CORS: https://{0}" -f $staticWebAppHost)
+                      }
+                      else {
+                        Write-Warning "Static Web App hostname could not be resolved. Backend CORS will only allow configured localhost origins."
+                      }
+
+                      $corsOrigins = $corsOrigins | Select-Object -Unique
+                      $appSettings = @()
+                      for ($index = 0; $index -lt $corsOrigins.Count; $index++) {
+                        $appSettings += "Cors__AllowedOrigins__${index}=$($corsOrigins[$index])"
+                      }
+
+                      az webapp config appsettings set `
+                        --name "$(apiAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --settings $appSettings `
+                        --only-show-errors `
+                        --output none | Out-Null
+
+                - task: AzureCLI@2
+                  displayName: Smoke test deployed API and frontend
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      function Invoke-UrlWithRetry {
+                        param(
+                          [Parameter(Mandatory = $true)]
+                          [string]$Url,
+                          [int]$MaxAttempts = 6,
+                          [int]$DelaySeconds = 5
+                        )
+
+                        for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+                          try {
+                            $response = Invoke-WebRequest -Uri $Url -Method Get -TimeoutSec 10 -SkipHttpErrorCheck
+                            if ([int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 300) {
+                              Write-Host ("Smoke check succeeded for {0} on attempt {1}." -f $Url, $attempt)
+                              return
+                            }
+                          }
+                          catch {
+                            if ($attempt -eq $MaxAttempts) {
+                              throw
+                            }
+                          }
+
+                          if ($attempt -lt $MaxAttempts) {
+                            Start-Sleep -Seconds $DelaySeconds
+                          }
+                        }
+
+                        throw "Smoke check failed for $Url after $MaxAttempts attempts."
+                      }
+
+                      $apiBaseUrl = "https://$(apiAppName).azurewebsites.net"
+                      $configuredBackendCustomDomain = "$(backendCustomDomain)".Trim()
+                      if (-not [string]::IsNullOrWhiteSpace($configuredBackendCustomDomain)) {
+                        $backendHostnames = @(az webapp config hostname list `
+                          --resource-group "$(resourceGroupName)" `
+                          --webapp-name "$(apiAppName)" `
+                          --output json `
+                          --only-show-errors | ConvertFrom-Json)
+
+                        $customBackendBinding = $backendHostnames | Where-Object {
+                          $_.name -eq $configuredBackendCustomDomain -and $_.sslState -eq 'SniEnabled'
+                        } | Select-Object -First 1
+
+                        if ($customBackendBinding) {
+                          $apiBaseUrl = "https://$configuredBackendCustomDomain"
+                        }
+                      }
+
+                      $frontendHostname = az staticwebapp show `
+                        --name "$(staticWebAppName)" `
+                        --resource-group "$(resourceGroupName)" `
+                        --query defaultHostname `
+                        --output tsv `
+                        --only-show-errors
+
+                      if ([string]::IsNullOrWhiteSpace($frontendHostname)) {
+                        throw "Static Web App '$(staticWebAppName)' was not found. UI smoke tests require a deployed frontend URL."
+                      }
+
+                      $defaultWebBaseUrl = "https://$frontendHostname"
+                      $webBaseUrl = $defaultWebBaseUrl
+                      $configuredFrontendCustomDomain = "$(frontendCustomDomain)".Trim()
+                      if (-not [string]::IsNullOrWhiteSpace($configuredFrontendCustomDomain)) {
+                        $frontendCustomDomains = @(az staticwebapp hostname list `
+                          --name "$(staticWebAppName)" `
+                          --resource-group "$(resourceGroupName)" `
+                          --query "[].name" `
+                          --output tsv `
+                          --only-show-errors 2>$null)
+
+                        if ($frontendCustomDomains -contains $configuredFrontendCustomDomain) {
+                          $candidateWebBaseUrl = "https://$configuredFrontendCustomDomain"
+                          try {
+                            Write-Host ("Checking frontend custom domain URL: {0}" -f $candidateWebBaseUrl)
+                            Invoke-UrlWithRetry -Url $candidateWebBaseUrl
+                            $webBaseUrl = $candidateWebBaseUrl
+                          }
+                          catch {
+                            Write-Warning ("Frontend custom domain '{0}' is not ready yet. Falling back to the default hostname '{1}'. Details: {2}" -f $configuredFrontendCustomDomain, $defaultWebBaseUrl, $_.Exception.Message)
+                          }
+                        }
+                      }
+
+                      Write-Host ("Checking API URL: {0}" -f $apiBaseUrl)
+                      Invoke-UrlWithRetry -Url "$apiBaseUrl/health"
+                      Write-Host ("Checking frontend URL: {0}" -f $webBaseUrl)
+                      if ($webBaseUrl -eq $defaultWebBaseUrl) {
+                        Invoke-UrlWithRetry -Url $webBaseUrl
+                      }

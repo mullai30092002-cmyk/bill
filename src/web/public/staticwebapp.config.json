@@ -1,0 +1,16 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": [
+      "/assets/*",
+      "/favicon.ico",
+      "/smartfms-favicon.ico",
+      "/smartfms-icon.svg",
+      "/smartfms-logo.svg",
+      "/robots.txt",
+      "/sitemap.xml",
+      "/default-avatar.png",
+      "/logo.png"
+    ]
+  }
+}

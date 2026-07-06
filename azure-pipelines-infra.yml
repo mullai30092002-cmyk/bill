@@ -1,0 +1,289 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: deploymentAction
+    displayName: Deployment action
+    type: string
+    default: what-if
+    values:
+      - what-if
+      - deploy
+  - name: environmentName
+    displayName: Environment name
+    type: string
+    default: dev
+    values:
+      - dev
+      - stage
+      - prod
+  - name: azureServiceConnection
+    displayName: Azure service connection
+    type: string
+    default: Intelsoft Development Subscription
+  - name: location
+    displayName: Azure region
+    type: string
+    default: southeastasia
+  - name: resourcePrefix
+    displayName: Resource prefix
+    type: string
+    default: billsoft
+  - name: resourceGroupName
+    displayName: Resource group name
+    type: string
+    default: rg-billsoft-dev
+  - name: sqlDatabaseName
+    displayName: SQL database name
+    type: string
+    default: BillSoftDb
+  - name: sqlAdministratorLogin
+    displayName: SQL administrator login
+    type: string
+    default: billsoftsqladmin
+  - name: appServiceSkuName
+    displayName: App Service SKU name
+    type: string
+    default: F1
+  - name: appServiceSkuTier
+    displayName: App Service SKU tier
+    type: string
+    default: Free
+  - name: sqlDatabaseSkuName
+    displayName: SQL database SKU name
+    type: string
+    default: Basic
+  - name: sqlDatabaseTier
+    displayName: SQL database SKU tier
+    type: string
+    default: Basic
+  - name: sqlDatabaseCapacity
+    displayName: SQL database capacity
+    type: number
+    default: 5
+  - name: enableKeyVault
+    displayName: Deploy Key Vault
+    type: boolean
+    default: false
+  - name: enableMonitoring
+    displayName: Deploy monitoring
+    type: boolean
+    default: false
+  - name: staticWebAppSkuName
+    displayName: Static Web App SKU name
+    type: string
+    default: Free
+  - name: staticWebAppLocation
+    displayName: Static Web App location
+    type: string
+    default: eastus2
+
+stages:
+  - stage: Validate
+    displayName: Validate Bicep and preview changes
+    jobs:
+      - job: WhatIf
+        displayName: Build and what-if
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: AzureCLI@2
+            displayName: Validate Bicep and run what-if
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                $PSNativeCommandUseErrorActionPreference = $true
+
+                $deploymentName = "billsoft-infra-whatif-$(Build.BuildId)"
+
+                az bicep build --file "$(Build.SourcesDirectory)/infra/main.bicep"
+                az group create --name "${{ parameters.resourceGroupName }}" --location "${{ parameters.location }}" --tags application=BillSoft environment="${{ parameters.environmentName }}" managedBy=AzureDevOps
+                az deployment group what-if `
+                  --name $deploymentName `
+                  --resource-group "${{ parameters.resourceGroupName }}" `
+                  --template-file "$(Build.SourcesDirectory)/infra/main.bicep" `
+                  --parameters environmentName="${{ parameters.environmentName }}" `
+                  --parameters location="${{ parameters.location }}" `
+                  --parameters resourcePrefix="${{ parameters.resourcePrefix }}" `
+                  --parameters sqlDatabaseName="${{ parameters.sqlDatabaseName }}" `
+                  --parameters appServiceSkuName="${{ parameters.appServiceSkuName }}" `
+                  --parameters appServiceSkuTier="${{ parameters.appServiceSkuTier }}" `
+                  --parameters sqlDatabaseSkuName="${{ parameters.sqlDatabaseSkuName }}" `
+                  --parameters sqlDatabaseTier="${{ parameters.sqlDatabaseTier }}" `
+                  --parameters sqlDatabaseCapacity="${{ parameters.sqlDatabaseCapacity }}" `
+                  --parameters staticWebAppSkuName="${{ parameters.staticWebAppSkuName }}" `
+                  --parameters staticWebAppLocation="${{ parameters.staticWebAppLocation }}" `
+                  --parameters enableKeyVault=${{ parameters.enableKeyVault }} `
+                  --parameters enableMonitoring=${{ parameters.enableMonitoring }} `
+                  --parameters sqlAdministratorLogin="${{ parameters.sqlAdministratorLogin }}" `
+                  --parameters sqlAdministratorPassword="BillSoft-WhatIf-Placeholder-2026!"
+
+  - stage: Deploy
+    displayName: Deploy infrastructure
+    dependsOn: Validate
+    condition: and(succeeded(), eq('${{ parameters.deploymentAction }}', 'deploy'))
+    jobs:
+      - deployment: DeployInfra
+        displayName: Deploy Bicep
+        environment: ${{ parameters.environmentName }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Build and deploy Bicep
+                  env:
+                    SQL_ADMIN_PASSWORD: $(sqlAdministratorPassword)
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $PSNativeCommandUseErrorActionPreference = $true
+
+                      function New-RandomSecret {
+                        $bytes = New-Object byte[] 64
+                        [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+                        [Convert]::ToBase64String($bytes)
+                      }
+
+                      function New-SqlAdministratorPassword {
+                        $suffix = [guid]::NewGuid().ToString('N').Substring(0, 20)
+                        return "B1llSoft!$suffix"
+                      }
+
+                      function Get-KeyVaultSecretValue {
+                        param(
+                          [Parameter(Mandatory = $true)]
+                          [string]$VaultName,
+                          [Parameter(Mandatory = $true)]
+                          [string]$SecretName
+                        )
+
+                        try {
+                          return az keyvault secret show `
+                            --vault-name $VaultName `
+                            --name $SecretName `
+                            --query value `
+                            --output tsv
+                        }
+                        catch {
+                          return $null
+                        }
+                      }
+
+                      $deploymentName = "billsoft-infra-deploy-$(Build.BuildId)"
+                      $sqlAdministratorPassword = $env:SQL_ADMIN_PASSWORD
+                      $enableKeyVault = [bool]::Parse('${{ parameters.enableKeyVault }}')
+                      if ([string]::IsNullOrWhiteSpace($sqlAdministratorPassword) -or $sqlAdministratorPassword.StartsWith('$(', [System.StringComparison]::Ordinal)) {
+                        if ($enableKeyVault) {
+                          Write-Host 'sqlAdministratorPassword secret variable was not provided; generating a bootstrap password for Key Vault-backed deployment.'
+                          $sqlAdministratorPassword = New-SqlAdministratorPassword
+                        }
+                        else {
+                          throw 'sqlAdministratorPassword secret variable is required for deploy when Key Vault is disabled.'
+                        }
+                      }
+
+                      az bicep build --file "$(Build.SourcesDirectory)/infra/main.bicep"
+                      az group create --name "${{ parameters.resourceGroupName }}" --location "${{ parameters.location }}" --tags application=BillSoft environment="${{ parameters.environmentName }}" managedBy=AzureDevOps
+                      $deployment = az deployment group create `
+                        --name $deploymentName `
+                        --resource-group "${{ parameters.resourceGroupName }}" `
+                        --template-file "$(Build.SourcesDirectory)/infra/main.bicep" `
+                        --parameters environmentName="${{ parameters.environmentName }}" `
+                        --parameters location="${{ parameters.location }}" `
+                        --parameters resourcePrefix="${{ parameters.resourcePrefix }}" `
+                        --parameters sqlDatabaseName="${{ parameters.sqlDatabaseName }}" `
+                        --parameters appServiceSkuName="${{ parameters.appServiceSkuName }}" `
+                        --parameters appServiceSkuTier="${{ parameters.appServiceSkuTier }}" `
+                        --parameters sqlDatabaseSkuName="${{ parameters.sqlDatabaseSkuName }}" `
+                        --parameters sqlDatabaseTier="${{ parameters.sqlDatabaseTier }}" `
+                        --parameters sqlDatabaseCapacity="${{ parameters.sqlDatabaseCapacity }}" `
+                        --parameters staticWebAppSkuName="${{ parameters.staticWebAppSkuName }}" `
+                        --parameters staticWebAppLocation="${{ parameters.staticWebAppLocation }}" `
+                        --parameters enableKeyVault=${{ parameters.enableKeyVault }} `
+                        --parameters enableMonitoring=${{ parameters.enableMonitoring }} `
+                        --parameters sqlAdministratorLogin="${{ parameters.sqlAdministratorLogin }}" `
+                        --parameters sqlAdministratorPassword="$sqlAdministratorPassword" `
+                        -o json | ConvertFrom-Json
+
+                      if (-not $enableKeyVault) {
+                        Write-Host 'Key Vault secret bootstrap is disabled for this deployment.'
+                        return
+                      }
+
+                      $keyVaultName = $deployment.properties.outputs.keyVaultName.value
+                      $staticWebAppName = $deployment.properties.outputs.staticWebAppName.value
+                      $sqlServerName = $deployment.properties.outputs.sqlServerName.value
+                      $sqlDatabaseName = $deployment.properties.outputs.sqlDatabaseName.value
+
+                      if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
+                        throw 'Unable to resolve the Key Vault name from the deployment outputs.'
+                      }
+
+                      if ([string]::IsNullOrWhiteSpace($staticWebAppName)) {
+                        throw 'Unable to resolve the Static Web App name from the deployment outputs.'
+                      }
+
+                      $servicePrincipalAppId = az account show --query "user.name" --output tsv
+                      if ([string]::IsNullOrWhiteSpace($servicePrincipalAppId)) {
+                        throw 'Unable to resolve the Azure service connection application ID.'
+                      }
+
+                      Write-Host ("Granting secret permissions to service principal {0} on Key Vault '{1}'..." -f $servicePrincipalAppId, $keyVaultName)
+                      az keyvault set-policy `
+                        --name $keyVaultName `
+                        --resource-group "${{ parameters.resourceGroupName }}" `
+                        --spn $servicePrincipalAppId `
+                        --secret-permissions get list set `
+                        --output none
+
+                      $connectionString = "Server=tcp:$sqlServerName.database.windows.net,1433;Initial Catalog=$sqlDatabaseName;Persist Security Info=False;User ID=${{ parameters.sqlAdministratorLogin }};Password=$sqlAdministratorPassword;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+
+                      az keyvault secret set `
+                        --vault-name $keyVaultName `
+                        --name 'Database--ConnectionString' `
+                        --value "$connectionString" `
+                        --output none
+
+                      az keyvault secret set `
+                        --vault-name $keyVaultName `
+                        --name 'Sql--AdministratorPassword' `
+                        --value "$sqlAdministratorPassword" `
+                        --output none
+
+                      $jwtSigningKey = Get-KeyVaultSecretValue -VaultName $keyVaultName -SecretName 'Jwt--SigningKey'
+
+                      if ([string]::IsNullOrWhiteSpace($jwtSigningKey)) {
+                        $jwtSigningKey = New-RandomSecret
+                        az keyvault secret set `
+                          --vault-name $keyVaultName `
+                          --name 'Jwt--SigningKey' `
+                          --value "$jwtSigningKey" `
+                          --output none
+                      }
+
+                      $staticWebAppDeploymentToken = az staticwebapp secrets list `
+                        --name $staticWebAppName `
+                        --resource-group "${{ parameters.resourceGroupName }}" `
+                        --query 'properties.apiKey' `
+                        -o tsv
+
+                      if ([string]::IsNullOrWhiteSpace($staticWebAppDeploymentToken)) {
+                        throw 'Unable to resolve the Static Web App deployment token.'
+                      }
+
+                      az keyvault secret set `
+                        --vault-name $keyVaultName `
+                        --name 'StaticWebApp--DeploymentToken' `
+                        --value "$staticWebAppDeploymentToken" `
+                        --output none

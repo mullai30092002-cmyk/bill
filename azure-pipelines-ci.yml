@@ -1,0 +1,150 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - master
+  paths:
+    include:
+      - BillSoft.sln
+      - src/api/**
+      - src/web/**
+      - tests/**
+    exclude:
+      - docs/**
+      - infra/**
+      - azure-pipelines-*.yml
+      - src/**/bin/**
+      - src/**/obj/**
+      - src/web/dist/**
+      - src/web/node_modules/**
+      - tests/**/bin/**
+      - tests/**/obj/**
+
+pr: none
+
+variables:
+  buildConfiguration: Release
+  dotnetSdkVersion: 8.0.x
+  nodeVersion: 22.x
+  pnpmVersion: 10.18.3
+  apiArtifactName: billsoft-api
+  webArtifactName: billsoft-web
+  backendTestResultsDir: $(Agent.TempDirectory)/TestResults/backend
+  frontendTestResultsDir: $(Build.SourcesDirectory)/src/web/test-results
+  nugetPackagesDir: $(Pipeline.Workspace)/.nuget/packages
+  pnpmStoreDir: $(Pipeline.Workspace)/.pnpm-store
+
+stages:
+  - stage: CI
+    displayName: CI
+    jobs:
+      - job: Backend
+        displayName: Backend build and test
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - task: UseDotNet@2
+            displayName: Use .NET SDK $(dotnetSdkVersion)
+            inputs:
+              packageType: sdk
+              version: $(dotnetSdkVersion)
+
+          - task: Cache@2
+            displayName: Cache NuGet packages
+            inputs:
+              key: nuget | "$(Agent.OS)" | BillSoft.sln | src/api/BillSoft.Api/BillSoft.Api.csproj | src/api/BillSoft.Application/BillSoft.Application.csproj | src/api/BillSoft.Domain/BillSoft.Domain.csproj | src/api/BillSoft.Infrastructure/BillSoft.Infrastructure.csproj | tests/BillSoft.Tests/BillSoft.Tests.csproj
+              restoreKeys: |
+                nuget | "$(Agent.OS)"
+              path: $(nugetPackagesDir)
+
+          - script: dotnet restore BillSoft.sln --packages "$(nugetPackagesDir)"
+            displayName: Restore backend dependencies
+
+          - script: dotnet build BillSoft.sln -c $(buildConfiguration) --no-restore
+            displayName: Build backend
+
+          - script: dotnet test BillSoft.sln -c $(buildConfiguration) --no-build --no-restore --logger "trx" --results-directory "$(backendTestResultsDir)"
+            displayName: Test backend
+
+          - task: PublishTestResults@2
+            displayName: Publish backend test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: '**/*.trx'
+              searchFolder: $(backendTestResultsDir)
+              mergeTestResults: true
+              failTaskOnFailedTests: true
+              failTaskOnMissingResultsFile: true
+              testRunTitle: Backend .NET Tests
+
+          - script: dotnet publish src/api/BillSoft.Api/BillSoft.Api.csproj -c $(buildConfiguration) --no-restore -o "$(Build.ArtifactStagingDirectory)/billsoft-api"
+            displayName: Publish API artifact
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish billsoft-api artifact
+            inputs:
+              targetPath: $(Build.ArtifactStagingDirectory)/billsoft-api
+              artifact: $(apiArtifactName)
+
+      - job: Frontend
+        displayName: Frontend test and build
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: Use Node.js $(nodeVersion)
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: corepack enable
+            displayName: Enable Corepack
+
+          - script: corepack prepare pnpm@$(pnpmVersion) --activate
+            displayName: Activate pnpm $(pnpmVersion)
+
+          - task: Cache@2
+            displayName: Cache pnpm store
+            inputs:
+              key: pnpm | "$(Agent.OS)" | src/web/package.json | src/web/pnpm-lock.yaml
+              restoreKeys: |
+                pnpm | "$(Agent.OS)"
+              path: $(pnpmStoreDir)
+
+          - script: pnpm install --frozen-lockfile --store-dir "$(pnpmStoreDir)"
+            workingDirectory: src/web
+            displayName: Install frontend dependencies
+
+          - script: pnpm run test:ci
+            workingDirectory: src/web
+            displayName: Run frontend tests
+
+          - task: PublishTestResults@2
+            displayName: Publish frontend test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: vitest-junit.xml
+              searchFolder: $(frontendTestResultsDir)
+              mergeTestResults: true
+              failTaskOnFailedTests: true
+              failTaskOnMissingResultsFile: true
+              testRunTitle: Frontend Vitest Tests
+
+          - script: pnpm run typecheck
+            workingDirectory: src/web
+            displayName: Typecheck frontend
+
+          - script: pnpm run build
+            workingDirectory: src/web
+            displayName: Build frontend
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish billsoft-web artifact
+            inputs:
+              targetPath: src/web/dist
+              artifact: $(webArtifactName)

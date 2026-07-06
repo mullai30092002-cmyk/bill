@@ -1,0 +1,1 @@
+window.__BILLSOFT_RUNTIME_CONFIG__ = window.__BILLSOFT_RUNTIME_CONFIG__ || {};

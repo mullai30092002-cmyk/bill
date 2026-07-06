@@ -1,0 +1,519 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    branches:
+      - master
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      environment_name:
+        description: Environment name
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+      ci_run_id:
+        description: CI run ID to download artifacts from, or leave blank to use the latest successful CI run on master
+        required: false
+        default: ""
+        type: string
+      seed_demo_data:
+        description: Seed foundation and demo data
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    name: Deploy API and frontend
+    # For workflow_run triggers, only run when CI succeeded
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment_name || 'dev' }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    env:
+      ENVIRONMENT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.environment_name || 'dev' }}
+      SEED_DEMO_DATA: ${{ github.event_name == 'workflow_dispatch' && (inputs.seed_demo_data && 'true' || 'false') || 'true' }}
+      FRONTEND_CUSTOM_DOMAIN: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment_name || 'dev') == 'dev' && 'app-billsoft-dev.intelsoft.sg' || (github.event_name == 'workflow_dispatch' && inputs.environment_name || 'dev') == 'stage' && 'app-billsoft-stage.intelsoft.sg' || '' }}
+      BACKEND_CUSTOM_DOMAIN: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve CI run ID
+        id: resolve_ci_run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const explicitRunId = `${{ github.event_name == 'workflow_dispatch' && inputs.ci_run_id || github.event.workflow_run.id }}`.trim();
+
+            if (/^\d+$/.test(explicitRunId)) {
+              core.info(`Using CI run ID ${explicitRunId}.`);
+              core.setOutput('ci_run_id', explicitRunId);
+              return;
+            }
+
+            core.warning(`CI run ID input "${explicitRunId}" is not numeric. Resolving the latest successful CI run on master.`);
+            const response = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              branch: 'master',
+              status: 'success',
+              per_page: 1,
+            });
+
+            const resolvedRunId = response.data.workflow_runs[0]?.id?.toString();
+            if (!resolvedRunId) {
+              core.setFailed('Unable to resolve a successful CI run ID from master.');
+              return;
+            }
+
+            core.info(`Resolved CI run ID ${resolvedRunId}.`);
+            core.setOutput('ci_run_id', resolvedRunId);
+
+      - name: Resolve environment resource names
+        id: resolve_resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $environmentName = '${{ env.ENVIRONMENT_NAME }}'
+          $resourceGroupName = switch ($environmentName) {
+            'dev'   { 'rg-billsoft-dev' }
+            'stage' { 'rg-billsoft-stage' }
+            'prod'  { 'rg-billsoft-prod' }
+            default { throw "Unsupported environment '$environmentName'." }
+          }
+
+          if (-not (az group exists --name $resourceGroupName | ConvertFrom-Json)) {
+            throw "Resource group '$resourceGroupName' does not exist for environment '$environmentName'."
+          }
+
+          function Get-TaggedResourceName {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$ResourceType,
+              [Parameter(Mandatory = $true)]
+              [string]$DisplayName
+            )
+
+            $names = @(az resource list `
+              --resource-group $resourceGroupName `
+              --resource-type $ResourceType `
+              --query "[?tags.application=='BillSoft' && tags.environment=='$environmentName'].name" `
+              --output tsv)
+
+            if ($names.Count -eq 0) {
+              $fallbackNames = @(az resource list `
+                --resource-group $resourceGroupName `
+                --resource-type $ResourceType `
+                --query "[].name" `
+                --output tsv)
+
+              if ($fallbackNames.Count -eq 1) {
+                Write-Host ("Resolved {0} from the only resource of type {1} in '{2}'." -f $DisplayName, $ResourceType, $resourceGroupName)
+                return $fallbackNames[0]
+              }
+
+              if ($fallbackNames.Count -gt 1) {
+                throw "Multiple $DisplayName resources were found in resource group '$resourceGroupName' for environment '$environmentName' and no tagged match was available."
+              }
+
+              throw "No $DisplayName was found in resource group '$resourceGroupName' for environment '$environmentName'."
+            }
+
+            if ($names.Count -gt 1) {
+              throw "Multiple $DisplayName resources were found in resource group '$resourceGroupName' for environment '$environmentName'."
+            }
+
+            return $names[0]
+          }
+
+          $apiAppName       = Get-TaggedResourceName -ResourceType 'Microsoft.Web/sites'       -DisplayName 'API App Service'
+          $staticWebAppName = Get-TaggedResourceName -ResourceType 'Microsoft.Web/staticSites' -DisplayName 'Static Web App'
+          $keyVaultName     = Get-TaggedResourceName -ResourceType 'Microsoft.KeyVault/vaults' -DisplayName 'Key Vault'
+
+          "resource_group_name=$resourceGroupName" >> $env:GITHUB_OUTPUT
+          "api_app_name=$apiAppName"               >> $env:GITHUB_OUTPUT
+          "static_web_app_name=$staticWebAppName"  >> $env:GITHUB_OUTPUT
+          "key_vault_name=$keyVaultName"            >> $env:GITHUB_OUTPUT
+
+      - name: Load deployment secrets from Key Vault
+        id: load_secrets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $keyVaultName = '${{ steps.resolve_resources.outputs.key_vault_name }}'.Trim()
+
+          if ([string]::IsNullOrWhiteSpace($keyVaultName)) {
+            throw 'Key Vault name was not resolved from the environment resource group.'
+          }
+
+          function Get-RequiredSecret {
+            param([string]$Name)
+
+            $value = az keyvault secret show `
+              --vault-name $keyVaultName `
+              --name $Name `
+              --query value `
+              -o tsv
+
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "Required Key Vault secret '$Name' is missing."
+            }
+
+            return $value
+          }
+
+          $dbConnStr   = Get-RequiredSecret 'Database--ConnectionString'
+          $jwtKey      = Get-RequiredSecret 'Jwt--SigningKey'
+          $swaToken    = Get-RequiredSecret 'StaticWebApp--DeploymentToken'
+
+          # Mask secrets in logs
+          Write-Host "::add-mask::$dbConnStr"
+          Write-Host "::add-mask::$jwtKey"
+          Write-Host "::add-mask::$swaToken"
+
+          "db_connection_string=$dbConnStr"          >> $env:GITHUB_OUTPUT
+          "jwt_signing_key=$jwtKey"                  >> $env:GITHUB_OUTPUT
+          "swa_deployment_token=$swaToken"           >> $env:GITHUB_OUTPUT
+
+      - name: Configure API runtime settings from Key Vault secrets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          az webapp config appsettings set `
+            --name '${{ steps.resolve_resources.outputs.api_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --settings `
+              "Database__ConnectionString=${{ steps.load_secrets.outputs.db_connection_string }}" `
+              "Jwt__SigningKey=${{ steps.load_secrets.outputs.jwt_signing_key }}" `
+            --output none
+
+      - name: Download API artifact
+        uses: actions/download-artifact@v4
+        # When triggered by workflow_run, download from that run; otherwise from current run
+        with:
+          name: billsoft-api
+          path: ${{ runner.temp }}/artifacts/billsoft-api
+          run-id: ${{ steps.resolve_ci_run.outputs.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy API to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ steps.resolve_resources.outputs.api_app_name }}
+          package: ${{ runner.temp }}/artifacts/billsoft-api
+
+      - name: Install .NET 8 SDK for database migrations
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run EF Core database migrations
+        shell: pwsh
+        env:
+          Database__ConnectionString: ${{ steps.load_secrets.outputs.db_connection_string }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          dotnet tool install --global dotnet-ef --version 8.*
+          $toolsPath = Join-Path $HOME '.dotnet/tools'
+          if (Test-Path $toolsPath) {
+            $pathSeparator = [System.IO.Path]::PathSeparator
+            $env:PATH = "$toolsPath$pathSeparator$env:PATH"
+          }
+
+          dotnet ef database update `
+            --project src/api/BillSoft.Infrastructure/BillSoft.Infrastructure.csproj `
+            --startup-project src/api/BillSoft.Api/BillSoft.Api.csproj `
+            --configuration Release
+
+      - name: Seed foundation and demo data
+        if: ${{ env.SEED_DEMO_DATA == 'true' }}
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/artifacts/billsoft-api
+        env:
+          Database__ConnectionString: ${{ steps.load_secrets.outputs.db_connection_string }}
+          Jwt__SigningKey: ${{ steps.load_secrets.outputs.jwt_signing_key }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $apiDll = Join-Path (Get-Location) 'BillSoft.Api.dll'
+          if (-not (Test-Path $apiDll)) {
+            throw "BillSoft.Api.dll was not found in the published API artifact at '$(Get-Location)'."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:Database__ConnectionString)) {
+            throw 'Database__ConnectionString is required for seeding.'
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:Jwt__SigningKey)) {
+            throw 'Jwt__SigningKey is required for seeding.'
+          }
+
+          dotnet $apiDll --seed-demo-login
+
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: billsoft-web
+          path: ${{ runner.temp }}/artifacts/billsoft-web
+          run-id: ${{ steps.resolve_ci_run.outputs.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write frontend runtime config
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/artifacts/billsoft-web
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $apiBaseUrl = 'https://${{ steps.resolve_resources.outputs.api_app_name }}.azurewebsites.net'
+          if ([string]::IsNullOrWhiteSpace($apiBaseUrl)) {
+            throw 'Unable to resolve the API base URL for the frontend runtime config.'
+          }
+
+          $runtimeConfigJson = @{ apiBaseUrl = $apiBaseUrl } | ConvertTo-Json -Compress
+          $runtimeConfig = "window.__BILLSOFT_RUNTIME_CONFIG__ = $runtimeConfigJson;"
+          Set-Content -Path (Join-Path (Get-Location) 'runtime-config.js') -Value $runtimeConfig -NoNewline -Encoding utf8
+
+      - name: Deploy frontend to Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.load_secrets.outputs.swa_deployment_token }}
+          action: upload
+          app_location: ${{ runner.temp }}/artifacts/billsoft-web
+          output_location: ""
+          skip_app_build: true
+          skip_api_build: true
+
+      - name: Configure frontend Static Web App custom domain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $customDomain = '${{ env.FRONTEND_CUSTOM_DOMAIN }}'.Trim()
+          if ([string]::IsNullOrWhiteSpace($customDomain)) {
+            Write-Host 'No frontend custom domain configured for this environment. Skipping.'
+            exit 0
+          }
+
+          $defaultHostname = az staticwebapp show `
+            --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --query defaultHostname `
+            --output tsv `
+            --only-show-errors
+
+          $existingHostnames = @(az staticwebapp hostname list `
+            --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --query "[].name" `
+            --output tsv `
+            --only-show-errors)
+
+          if ($existingHostnames -contains $customDomain) {
+            Write-Host ("Frontend custom domain '{0}' is already configured." -f $customDomain)
+            exit 0
+          }
+
+          try {
+            az staticwebapp hostname set `
+              --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+              --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+              --hostname $customDomain `
+              --validation-method cname-delegation `
+              --no-wait `
+              --only-show-errors `
+              --output none
+
+            Write-Host ("Requested Static Web App custom domain binding for '{0}'." -f $customDomain)
+            Write-Host ("Ensure CNAME {0} -> {1} exists if the domain is still pending validation." -f $customDomain, $defaultHostname)
+          }
+          catch {
+            Write-Warning ("Unable to configure frontend custom domain '{0}' yet. Ensure CNAME {0} -> {1} exists and rerun this pipeline after DNS propagation. Details: {2}" -f $customDomain, $defaultHostname, $_.Exception.Message)
+          }
+
+      - name: Configure API CORS origin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $staticWebAppHost = az staticwebapp show `
+            --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --query defaultHostname `
+            -o tsv
+
+          if ([string]::IsNullOrWhiteSpace($staticWebAppHost)) {
+            throw "Unable to resolve the Static Web App hostname."
+          }
+
+          $corsOrigins = @(
+            'http://localhost:4173'
+            'http://localhost:5173'
+            'http://localhost:5174'
+          )
+
+          $configuredFrontendCustomDomain = '${{ env.FRONTEND_CUSTOM_DOMAIN }}'.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($configuredFrontendCustomDomain)) {
+            $frontendCorsHostnames = [System.Collections.Generic.List[string]]::new()
+            $frontendCorsHostnames.Add($configuredFrontendCustomDomain)
+
+            if ($configuredFrontendCustomDomain.StartsWith('www.', [System.StringComparison]::OrdinalIgnoreCase)) {
+              $frontendCorsHostnames.Add($configuredFrontendCustomDomain.Substring(4))
+            }
+            else {
+              $frontendCorsHostnames.Add("www.$configuredFrontendCustomDomain")
+            }
+
+            $frontendCorsHostnames = $frontendCorsHostnames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+            $corsOrigins = @($frontendCorsHostnames | ForEach-Object { "https://$_" }) + $corsOrigins
+
+            Write-Host ("Configured frontend custom domains for CORS: {0}" -f (($frontendCorsHostnames | ForEach-Object { "https://$_" }) -join ', '))
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($staticWebAppHost)) {
+            $corsOrigins = @("https://$staticWebAppHost") + $corsOrigins
+            Write-Host ("Resolved frontend origin for CORS: https://{0}" -f $staticWebAppHost)
+          }
+          else {
+            Write-Warning "Static Web App hostname could not be resolved. Backend CORS will only allow configured localhost origins."
+          }
+
+          $corsOrigins = $corsOrigins | Select-Object -Unique
+          $appSettings = @()
+          for ($index = 0; $index -lt $corsOrigins.Count; $index++) {
+            $appSettings += "Cors__AllowedOrigins__${index}=$($corsOrigins[$index])"
+          }
+
+          az webapp config appsettings set `
+            --name '${{ steps.resolve_resources.outputs.api_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --settings $appSettings `
+            --only-show-errors `
+            --output none | Out-Null
+
+      - name: Smoke test deployed API and frontend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          function Invoke-UrlWithRetry {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$Url,
+              [int]$MaxAttempts = 6,
+              [int]$DelaySeconds = 5
+            )
+
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+              try {
+                $response = Invoke-WebRequest -Uri $Url -Method Get -TimeoutSec 10 -SkipHttpErrorCheck
+                if ([int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 300) {
+                  Write-Host ("Smoke check succeeded for {0} on attempt {1}." -f $Url, $attempt)
+                  return
+                }
+              }
+              catch {
+                if ($attempt -eq $MaxAttempts) {
+                  throw
+                }
+              }
+
+              if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Seconds $DelaySeconds
+              }
+            }
+
+            throw "Smoke check failed for $Url after $MaxAttempts attempts."
+          }
+
+          $apiBaseUrl = 'https://${{ steps.resolve_resources.outputs.api_app_name }}.azurewebsites.net'
+          $configuredBackendCustomDomain = '${{ env.BACKEND_CUSTOM_DOMAIN }}'.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($configuredBackendCustomDomain)) {
+            $backendHostnames = @(az webapp config hostname list `
+              --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+              --webapp-name '${{ steps.resolve_resources.outputs.api_app_name }}' `
+              --output json `
+              --only-show-errors | ConvertFrom-Json)
+
+            $customBackendBinding = $backendHostnames | Where-Object {
+              $_.name -eq $configuredBackendCustomDomain -and $_.sslState -eq 'SniEnabled'
+            } | Select-Object -First 1
+
+            if ($customBackendBinding) {
+              $apiBaseUrl = "https://$configuredBackendCustomDomain"
+            }
+          }
+
+          $frontendHostname = az staticwebapp show `
+            --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+            --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+            --query defaultHostname `
+            --output tsv `
+            --only-show-errors
+
+          if ([string]::IsNullOrWhiteSpace($frontendHostname)) {
+            throw "Static Web App '${{ steps.resolve_resources.outputs.static_web_app_name }}' was not found. UI smoke tests require a deployed frontend URL."
+          }
+
+          $defaultWebBaseUrl = "https://$frontendHostname"
+          $webBaseUrl = $defaultWebBaseUrl
+          $configuredFrontendCustomDomain = '${{ env.FRONTEND_CUSTOM_DOMAIN }}'.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($configuredFrontendCustomDomain)) {
+            $frontendCustomDomains = @(az staticwebapp hostname list `
+              --name '${{ steps.resolve_resources.outputs.static_web_app_name }}' `
+              --resource-group '${{ steps.resolve_resources.outputs.resource_group_name }}' `
+              --query "[].name" `
+              --output tsv `
+              --only-show-errors 2>$null)
+
+            if ($frontendCustomDomains -contains $configuredFrontendCustomDomain) {
+              $candidateWebBaseUrl = "https://$configuredFrontendCustomDomain"
+              try {
+                Write-Host ("Checking frontend custom domain URL: {0}" -f $candidateWebBaseUrl)
+                Invoke-UrlWithRetry -Url $candidateWebBaseUrl
+                $webBaseUrl = $candidateWebBaseUrl
+              }
+              catch {
+                Write-Warning ("Frontend custom domain '{0}' is not ready yet. Falling back to the default hostname '{1}'. Details: {2}" -f $configuredFrontendCustomDomain, $defaultWebBaseUrl, $_.Exception.Message)
+              }
+            }
+          }
+
+          Write-Host ("Checking API URL: {0}" -f $apiBaseUrl)
+          Invoke-UrlWithRetry -Url "$apiBaseUrl/health"
+          Write-Host ("Checking frontend URL: {0}" -f $webBaseUrl)
+          if ($webBaseUrl -eq $defaultWebBaseUrl) {
+            Invoke-UrlWithRetry -Url $webBaseUrl
+          }
