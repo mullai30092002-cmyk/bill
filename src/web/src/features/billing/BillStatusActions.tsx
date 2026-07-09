@@ -107,6 +107,7 @@ export const BillStatusActions = ({
         </form>
       ) : (
         <EmptyState
+          className="billing-status-actions__empty-state"
           title={t('billing.cancellationUnavailableTitle')}
           description={
             canManageBills

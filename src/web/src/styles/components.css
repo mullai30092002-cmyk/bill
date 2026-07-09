@@ -493,6 +493,20 @@
   justify-content: center;
 }
 
+.billing-status-actions__empty-state {
+  margin-top: 0.25rem;
+}
+
+.billing-status-actions__empty-state .ui-card {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.billing-status-actions__empty-state .ui-card__body {
+  padding: 0;
+}
+
 /* ══════════════════════════════════════════════════════════
    Action tile
 ══════════════════════════════════════════════════════════ */
